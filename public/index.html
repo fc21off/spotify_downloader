@@ -16,7 +16,7 @@ button:disabled { opacity: .55 }
 </style>
 <main>
   <h1>MP3 für die Platte</h1>
-  <p>Füge einen Spotify-Songlink ein. spotDL sucht die Aufnahme auf YouTube.</p>
+  <p>Füge einen Spotify-Songlink ein. Votify ruft den Stream von Spotify ab und die App speichert ihn als MP3.</p>
   <form>
     <label for="url">Spotify-Songlink</label>
     <input id="url" type="url" placeholder="https://open.spotify.com/track/…" required maxlength="512">
@@ -34,7 +34,7 @@ const status = document.querySelector('#status');
 form.addEventListener('submit', async event => {
   event.preventDefault();
   button.disabled = true;
-  status.textContent = 'Suche und Download laufen. Das kann bis zu zwei Minuten dauern.';
+  status.textContent = 'Spotify-Abruf und MP3-Konvertierung laufen. Das kann bis zu zwei Minuten dauern.';
   try {
     const reply = await fetch('/api/download', {
       method: 'POST',
@@ -57,7 +57,7 @@ form.addEventListener('submit', async event => {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 60000);
-    status.textContent = 'Download gestartet. Hör kurz rein, ob es die richtige Aufnahme ist.';
+    status.textContent = 'MP3-Download gestartet.';
   } catch (error) {
     status.textContent = error.message;
   } finally {

@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hmac
 import json
 import os
@@ -12,6 +14,17 @@ import imageio_ffmpeg
 
 TRACK = re.compile(r"https://open\.spotify\.com/(?:intl-[a-z]{2}/)?track/([A-Za-z0-9]{22})")
 MAX_MP3_BYTES = 4_400_000
+
+
+def votify_failure(details):
+    message = details.lower()
+    if "audio key" in message or "decrypt" in message:
+        return "Spotify hat den Audiostream für diese Sitzung nicht freigegeben."
+    if "401" in message or "403" in message or "login" in message or "sp_dc" in message:
+        return "Spotify hat die Sitzung abgelehnt. Prüfe die in Vercel gespeicherten Spotify-Cookies."
+    if "429" in message:
+        return "Spotify begrenzt gerade die Anfragen. Versuche es später erneut."
+    return "Votify hat keine Audiodatei für diesen Track geliefert."
 
 
 class handler(BaseHTTPRequestHandler):
@@ -42,40 +55,74 @@ class handler(BaseHTTPRequestHandler):
         except (AttributeError, KeyError, TypeError, ValueError):
             return self.reply(400, "Bitte einen Spotify-Link zu einem einzelnen Song eingeben.")
 
+        encoded_cookies = os.environ.get("SPOTIFY_COOKIES_B64", "").strip()
+        if not encoded_cookies:
+            return self.reply(503, "Setze SPOTIFY_COOKIES_B64 als Secret im Vercel-Projekt.")
+        try:
+            cookies = base64.b64decode(encoded_cookies, validate=True)
+        except (binascii.Error, ValueError):
+            return self.reply(503, "SPOTIFY_COOKIES_B64 muss die Cookies-Datei als Base64 enthalten.")
+        if b"\tsp_dc\t" not in cookies:
+            return self.reply(503, "Der Spotify-Cookie-Export enthält keinen sp_dc-Sitzungscookie.")
+
         track_id = match.group(1)
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory)
-            env = {**os.environ, "HOME": directory, "XDG_CACHE_HOME": directory}
+            workspace = Path(directory)
+            cookie_file = workspace / "spotify-cookies.txt"
+            cookie_file.write_bytes(cookies)
+            output = workspace / "audio"
+            env = {
+                **os.environ,
+                "HOME": directory,
+                "XDG_CACHE_HOME": directory,
+                "PYTHONPATH": os.pathsep.join(path for path in sys.path if os.path.isabs(path)),
+                "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python",
+            }
+            env.pop("DOWNLOAD_PASSWORD", None)
+            env.pop("SPOTIFY_COOKIES_B64", None)
             try:
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
                 result = subprocess.run(
-                    [sys.executable, "-m", "spotdl", "download",
-                     "https://open.spotify.com/track/" + track_id,
-                     "--ffmpeg", imageio_ffmpeg.get_ffmpeg_exe(),
-                     "--format", "mp3", "--bitrate", "128k",
-                     "--output", str(output / "{track-id}.{output-ext}")],
-                    cwd=directory, env=env, capture_output=True, timeout=100, text=True, encoding="utf-8", errors="replace",
+                    [
+                        sys.executable, "-m", "votify", "--no-config-file",
+                        "--cookies-path", str(cookie_file), "--session-type", "librespot",
+                        "--audio-quality", "vorbis-medium", "--output", str(output),
+                        "--temp", directory, "--wait-interval", "0",
+                        "--no-synced-lyrics-file", "--ffmpeg-path", ffmpeg,
+                        "https://open.spotify.com/track/" + track_id,
+                    ],
+                    cwd=directory, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                    timeout=85, text=True, encoding="utf-8", errors="replace",
                 )
             except subprocess.TimeoutExpired:
-                return self.reply(504, "spotDL hat zu lange gebraucht.")
-            except (OSError, RuntimeError) as error:
-                print(f"spotDL start failed for {track_id}: {error}", file=sys.stderr, flush=True)
-                return self.reply(502, "spotDL oder FFmpeg konnte nicht gestartet werden.")
+                return self.reply(504, "Votify hat für den Spotify-Abruf zu lange gebraucht.")
+            except (OSError, RuntimeError):
+                print(f"Votify or FFmpeg could not start for {track_id}", file=sys.stderr, flush=True)
+                return self.reply(502, "Votify oder FFmpeg konnte nicht gestartet werden.")
 
-            files = list(output.glob("*.mp3"))
+            files = list(output.rglob("*.ogg"))
             if result.returncode or len(files) != 1:
-                details = "\n".join((result.stdout, result.stderr)).strip()
+                message = votify_failure(result.stdout + "\n" + result.stderr)
                 print(
-                    f"spotDL failed for {track_id} (exit {result.returncode}): {details[-3500:]}",
+                    f"Votify failed for {track_id} (exit {result.returncode}): {message}",
                     file=sys.stderr, flush=True,
                 )
-                diagnostic = details.lower()
-                if "sign in to confirm" in diagnostic or "not a bot" in diagnostic:
-                    return self.reply(502, "YouTube verlangt eine Anmeldung für den Vercel-Server. Versuche spotDL lokal.")
-                if "no results found" in diagnostic or "no matching" in diagnostic:
-                    return self.reply(502, "spotDL hat für diesen Song keine passende YouTube-Aufnahme gefunden.")
-                return self.reply(502, f"spotDL konnte keine MP3 erstellen. Details stehen in den Vercel-Logs unter {track_id}.")
-            file = files[0]
-            size = file.stat().st_size
+                return self.reply(502, message)
+
+            mp3 = workspace / "audio.mp3"
+            try:
+                subprocess.run(
+                    [
+                        ffmpeg, "-nostdin", "-v", "error", "-i", str(files[0]),
+                        "-map", "0:a:0", "-map_metadata", "0:s:a:0",
+                        "-c:a", "libmp3lame", "-b:a", "128k", str(mp3),
+                    ],
+                    cwd=directory, env=env, capture_output=True, timeout=25, check=True,
+                )
+            except (subprocess.SubprocessError, OSError):
+                return self.reply(502, "FFmpeg konnte den Spotify-Stream nicht als MP3 speichern.")
+
+            size = mp3.stat().st_size
             if not size:
                 return self.reply(502, "Die MP3-Datei ist leer.")
             if size > MAX_MP3_BYTES:
@@ -86,4 +133,4 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(file.read_bytes())
+            self.wfile.write(mp3.read_bytes())

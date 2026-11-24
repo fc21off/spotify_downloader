@@ -1,0 +1,6 @@
+cookies.txt
+spotify-cookies.txt
+.env*
+.vercel/
+__pycache__/
+.venv/
