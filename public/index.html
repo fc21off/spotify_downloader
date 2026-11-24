@@ -2,27 +2,38 @@
 <html lang="de">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MP3 für die Platte</title>
+<title>LIVIA-SOPHIE · Sechs Songs</title>
 <style>
 * { box-sizing: border-box }
-body { margin: 0; padding: 24px; min-height: 100vh; display: grid; place-items: center; font: 1rem/1.55 system-ui,sans-serif; color: #fff4dc; background: #231b24 }
-main { width: min(100%, 36rem); padding: clamp(24px, 6vw, 48px); border: 1px solid #706070; border-radius: 20px; background: #312532 }
-h1 { margin: 0; font: 2.6rem Georgia,serif }
-label, input, button { display: block; margin-top: 12px }
-input, button { font: inherit; padding: 10px 14px; border: 0; border-radius: 8px }
-input { width: 100%; margin-top: 4px }
-button { background: #ffe09c; color: #241824; font-weight: 700 }
-button:disabled { opacity: .55 }
+:root { color-scheme: light }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 28px 20px; background: #eddfd6; color: #2d1d28; font: 1rem/1.55 system-ui,sans-serif }
+main { width: min(100%,34rem); background: #fff8f0; border: 1px solid #ddc8bf; border-radius: 20px; padding: clamp(22px,6vw,48px); box-shadow: 0 16px 55px #51233e16 }
+h1 { margin: 0; font: clamp(2.3rem,9vw,4rem)/1 Georgia,serif; letter-spacing: -.045em }
+ol { margin: 24px 0; padding: 0; list-style: none }
+li { border-top: 1px solid #eadbd3; padding: 8px 0 }
+li:last-child { border-bottom: 1px solid #eadbd3 }
+label,input,button { display: block; width: 100% }
+label { font-weight: 600 }
+input,button { margin-top: 8px; border: 1px solid #a78b9f; border-radius: 8px; padding: 11px 14px; font: inherit }
+button { color: #fff8f0; background: #582e4a; border-color: #582e4a; font-weight: 650; cursor: pointer }
+button:disabled { opacity: .65; cursor: wait }
+#status { margin: 12px 0 0 }
+#status:empty { margin: 0 }
 </style>
 <main>
-  <h1>MP3 für die Platte</h1>
-  <p>Füge einen Spotify-Songlink ein. Votify ruft den Stream von Spotify ab und die App speichert ihn als MP3.</p>
+  <h1>LIVIA-SOPHIE</h1>
+  <ol aria-label="Songs">
+    <li>Pink Grey Purple</li>
+    <li>LAST</li>
+    <li>HEAVENLY LOVE</li>
+    <li>WITHOUT YOU</li>
+    <li>RESPECT</li>
+    <li>GLOW</li>
+  </ol>
   <form>
-    <label for="url">Spotify-Songlink</label>
-    <input id="url" type="url" placeholder="https://open.spotify.com/track/…" required maxlength="512">
-    <label for="password">App-Passwort</label>
-    <input id="password" type="password" autocomplete="current-password" required maxlength="128">
-    <button>MP3 herunterladen</button>
+    <label for="password">Download-Passwort</label>
+    <input id="password" type="password" autocomplete="current-password" spellcheck="false" required>
+    <button type="submit">Alle Songs als ZIP herunterladen · 42 MB</button>
   </form>
   <p id="status" role="status"></p>
 </main>
@@ -31,35 +42,43 @@ const form = document.querySelector('form');
 const button = form.querySelector('button');
 const status = document.querySelector('#status');
 
+async function unlock(encrypted, password) {
+  const raw = Uint8Array.from(atob(password.replaceAll('-', '+').replaceAll('_', '/') + '='), char => char.charCodeAt(0));
+  const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: encrypted.slice(0, 12) },
+    key,
+    encrypted.subarray(12),
+  );
+}
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
+  const password = document.querySelector('#password').value.trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(password)) {
+    status.textContent = 'Kopiere das vollständige Download-Passwort.';
+    return;
+  }
   button.disabled = true;
-  status.textContent = 'Spotify-Abruf und MP3-Konvertierung laufen. Das kann bis zu zwei Minuten dauern.';
+  status.textContent = 'Das ZIP wird geladen …';
   try {
-    const reply = await fetch('/api/download', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + document.querySelector('#password').value,
-      },
-      body: JSON.stringify({ url: document.querySelector('#url').value.trim() }),
-    });
-    const type = reply.headers.get('content-type') ?? '';
-    if (!reply.ok || !type.startsWith('audio/mpeg')) {
-      const error = type.includes('application/json') ? (await reply.json()).error : '';
-      throw new Error(error || 'Download fehlgeschlagen (HTTP ' + reply.status + ').');
-    }
+    const response = await fetch('./tracks.bin');
+    if (!response.ok) throw new Error('Das ZIP konnte nicht geladen werden. Versuch es noch einmal.');
+    const encrypted = new Uint8Array(await response.arrayBuffer());
+    const zip = await unlock(encrypted, password);
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(await reply.blob());
-    const name = /filename="([A-Za-z0-9]+\.mp3)"/.exec(reply.headers.get('content-disposition') ?? '');
-    link.download = name?.[1] ?? 'song.mp3';
+    const url = URL.createObjectURL(new Blob([zip], { type: 'application/zip' }));
+    link.href = url;
+    link.download = 'LIVIA-SOPHIE.zip';
     document.body.append(link);
     link.click();
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(link.href), 60000);
-    status.textContent = 'MP3-Download gestartet.';
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    status.textContent = 'Download gestartet.';
   } catch (error) {
-    status.textContent = error.message;
+    status.textContent = error.name === 'OperationError'
+      ? 'Das Download-Passwort stimmt nicht.'
+      : 'Das ZIP konnte nicht geöffnet werden. Versuch es noch einmal.';
   } finally {
     button.disabled = false;
   }
