@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MP3 für die Platte</title>
+<style>
+* { box-sizing: border-box }
+body { margin: 0; padding: 24px; min-height: 100vh; display: grid; place-items: center; font: 1rem/1.55 system-ui,sans-serif; color: #fff4dc; background: #231b24 }
+main { width: min(100%, 36rem); padding: clamp(24px, 6vw, 48px); border: 1px solid #706070; border-radius: 20px; background: #312532 }
+h1 { margin: 0; font: 2.6rem Georgia,serif }
+label, input, button { display: block; margin-top: 12px }
+input, button { font: inherit; padding: 10px 14px; border: 0; border-radius: 8px }
+input { width: 100%; margin-top: 4px }
+button { background: #ffe09c; color: #241824; font-weight: 700 }
+button:disabled { opacity: .55 }
+</style>
+<main>
+  <h1>MP3 für die Platte</h1>
+  <p>Füge einen Spotify-Songlink ein. spotDL sucht die Aufnahme auf YouTube.</p>
+  <form>
+    <label for="url">Spotify-Songlink</label>
+    <input id="url" type="url" placeholder="https://open.spotify.com/track/…" required maxlength="512">
+    <label for="password">App-Passwort</label>
+    <input id="password" type="password" autocomplete="current-password" required maxlength="128">
+    <button>MP3 herunterladen</button>
+  </form>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+const form = document.querySelector('form');
+const button = form.querySelector('button');
+const status = document.querySelector('#status');
+
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  button.disabled = true;
+  status.textContent = 'Suche und Download laufen. Das kann bis zu zwei Minuten dauern.';
+  try {
+    const reply = await fetch('/api/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + document.querySelector('#password').value,
+      },
+      body: JSON.stringify({ url: document.querySelector('#url').value.trim() }),
+    });
+    const type = reply.headers.get('content-type') ?? '';
+    if (!reply.ok || !type.startsWith('audio/mpeg')) {
+      const error = type.includes('application/json') ? (await reply.json()).error : '';
+      throw new Error(error || 'Download fehlgeschlagen (HTTP ' + reply.status + ').');
+    }
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await reply.blob());
+    const name = /filename="([A-Za-z0-9]+\.mp3)"/.exec(reply.headers.get('content-disposition') ?? '');
+    link.download = name?.[1] ?? 'song.mp3';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+    status.textContent = 'Download gestartet. Hör kurz rein, ob es die richtige Aufnahme ist.';
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</html>
