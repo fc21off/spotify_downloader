@@ -47,21 +47,33 @@ class handler(BaseHTTPRequestHandler):
             output = Path(directory)
             env = {**os.environ, "HOME": directory, "XDG_CACHE_HOME": directory}
             try:
-                subprocess.run(
+                result = subprocess.run(
                     [sys.executable, "-m", "spotdl", "download",
                      "https://open.spotify.com/track/" + track_id,
                      "--ffmpeg", imageio_ffmpeg.get_ffmpeg_exe(),
                      "--format", "mp3", "--bitrate", "128k",
                      "--output", str(output / "{track-id}.{output-ext}")],
-                    cwd=directory, env=env, capture_output=True, timeout=100, check=True,
+                    cwd=directory, env=env, capture_output=True, timeout=100, text=True, encoding="utf-8", errors="replace",
                 )
             except subprocess.TimeoutExpired:
                 return self.reply(504, "spotDL hat zu lange gebraucht.")
-            except subprocess.CalledProcessError:
-                return self.reply(502, "spotDL konnte kein Audio abrufen. Prüfe, ob der Song auf YouTube verfügbar ist. YouTube kann auch den Vercel-Server blockieren.")
+            except (OSError, RuntimeError) as error:
+                print(f"spotDL start failed for {track_id}: {error}", file=sys.stderr, flush=True)
+                return self.reply(502, "spotDL oder FFmpeg konnte nicht gestartet werden.")
+
             files = list(output.glob("*.mp3"))
-            if len(files) != 1:
-                return self.reply(502, "spotDL hat keine eindeutige MP3-Datei erstellt.")
+            if result.returncode or len(files) != 1:
+                details = "\n".join((result.stdout, result.stderr)).strip()
+                print(
+                    f"spotDL failed for {track_id} (exit {result.returncode}): {details[-3500:]}",
+                    file=sys.stderr, flush=True,
+                )
+                diagnostic = details.lower()
+                if "sign in to confirm" in diagnostic or "not a bot" in diagnostic:
+                    return self.reply(502, "YouTube verlangt eine Anmeldung für den Vercel-Server. Versuche spotDL lokal.")
+                if "no results found" in diagnostic or "no matching" in diagnostic:
+                    return self.reply(502, "spotDL hat für diesen Song keine passende YouTube-Aufnahme gefunden.")
+                return self.reply(502, f"spotDL konnte keine MP3 erstellen. Details stehen in den Vercel-Logs unter {track_id}.")
             file = files[0]
             size = file.stat().st_size
             if not size:
